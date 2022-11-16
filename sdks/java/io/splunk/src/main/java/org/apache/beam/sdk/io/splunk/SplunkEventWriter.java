@@ -17,6 +17,7 @@
  */
 package org.apache.beam.sdk.io.splunk;
 
+import static java.util.stream.Collectors.toList;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkNotNull;
 
@@ -26,11 +27,18 @@ import com.google.auto.value.AutoValue;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
 import java.util.List;
+import org.apache.beam.repackaged.core.org.apache.commons.compress.utils.IOUtils;
+import org.apache.beam.sdk.io.FileSystems;
+import org.apache.beam.sdk.io.fs.MatchResult;
+import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.metrics.Metrics;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -105,6 +113,12 @@ abstract class SplunkEventWriter extends DoFn<KV<Integer, SplunkEvent>, SplunkWr
 
   abstract @Nullable ValueProvider<Integer> inputBatchCount();
 
+  abstract @Nullable ValueProvider<String> rootCaCertificatePath();
+
+  abstract @Nullable ValueProvider<Boolean> enableBatchLogs();
+
+  abstract @Nullable ValueProvider<Boolean> enableGzipHttpCompression();
+
   @Setup
   public void setup() {
 
@@ -141,13 +155,18 @@ abstract class SplunkEventWriter extends DoFn<KV<Integer, SplunkEvent>, SplunkWr
               .withToken(token().get())
               .withDisableCertificateValidation(disableValidation);
 
+      if (rootCaCertificatePath() != null && rootCaCertificatePath().get() != null) {
+        builder.withRootCaCertificate(getCertFromGcsAsBytes(rootCaCertificatePath().get()));
+      }
+
       publisher = builder.build();
       LOG.info("Successfully created HttpEventPublisher");
 
     } catch (NoSuchAlgorithmException
         | KeyStoreException
         | KeyManagementException
-        | UnsupportedEncodingException e) {
+        | IOException
+        | CertificateException e) {
       LOG.error("Error creating HttpEventPublisher: {}", e.getMessage());
       throw new RuntimeException(e);
     }
@@ -304,6 +323,41 @@ abstract class SplunkEventWriter extends DoFn<KV<Integer, SplunkEvent>, SplunkWr
     }
   }
 
+  /**
+   * Reads a root CA certificate from GCS and returns it as raw bytes.
+   *
+   * @param filePath path to root CA cert in GCS
+   * @return raw contents of cert
+   * @throws RuntimeException thrown if not able to read or parse cert
+   */
+  public static byte[] getCertFromGcsAsBytes(String filePath) throws IOException {
+    ReadableByteChannel channel = getGcsFileByteChannel(filePath);
+    try (InputStream inputStream = Channels.newInputStream(channel)) {
+      return IOUtils.toByteArray(inputStream);
+    } catch (IOException e) {
+      throw new RuntimeException("Error when reading: " + filePath, e);
+    }
+  }
+
+  /** Handles getting the {@link ReadableByteChannel} for {@code filePath}. */
+  private static ReadableByteChannel getGcsFileByteChannel(String filePath) throws IOException {
+    try {
+      MatchResult result = FileSystems.match(filePath);
+      checkArgument(
+          result.status() == MatchResult.Status.OK && !result.metadata().isEmpty(),
+          "Failed to match any files with the pattern: " + filePath);
+
+      List<ResourceId> rId =
+          result.metadata().stream().map(MatchResult.Metadata::resourceId).collect(toList());
+
+      checkArgument(rId.size() == 1, "Expected exactly 1 file, but got " + rId.size() + " files.");
+
+      return FileSystems.open(rId.get(0));
+    } catch (IOException e) {
+      throw new RuntimeException("Error when finding: " + filePath, e);
+    }
+  }
+
   @AutoValue.Builder
   abstract static class Builder {
 
@@ -317,6 +371,12 @@ abstract class SplunkEventWriter extends DoFn<KV<Integer, SplunkEvent>, SplunkWr
 
     abstract Builder setDisableCertificateValidation(
         ValueProvider<Boolean> disableCertificateValidation);
+
+    abstract Builder setRootCaCertificatePath(ValueProvider<String> rootCaCertificatePath);
+
+    abstract Builder setEnableBatchLogs(ValueProvider<Boolean> enableBatchLogs);
+
+    abstract Builder setEnableGzipHttpCompression(ValueProvider<Boolean> enableGzipHttpCompression);
 
     abstract Builder setInputBatchCount(ValueProvider<Integer> inputBatchCount);
 
@@ -384,6 +444,36 @@ abstract class SplunkEventWriter extends DoFn<KV<Integer, SplunkEvent>, SplunkWr
      */
     Builder withDisableCertificateValidation(ValueProvider<Boolean> disableCertificateValidation) {
       return setDisableCertificateValidation(disableCertificateValidation);
+    }
+
+    /**
+     * Method to set the self signed certificate path.
+     *
+     * @param rootCaCertificatePath Path to self-signed certificate
+     * @return {@link Builder}
+     */
+    public Builder withRootCaCertificatePath(ValueProvider<String> rootCaCertificatePath) {
+      return setRootCaCertificatePath(rootCaCertificatePath);
+    }
+
+    /**
+     * Method to enable batch logs.
+     *
+     * @param enableBatchLogs for enabling batch logs.
+     * @return {@link Builder}
+     */
+    public Builder withEnableBatchLogs(ValueProvider<Boolean> enableBatchLogs) {
+      return setEnableBatchLogs(enableBatchLogs);
+    }
+
+    /**
+     * Method to specify if HTTP requests sent to Splunk should be GZIP encoded.
+     *
+     * @param enableGzipHttpCompression whether to enable Gzip encoding.
+     * @return {@link Builder}
+     */
+    public Builder withEnableGzipHttpCompression(ValueProvider<Boolean> enableGzipHttpCompression) {
+      return setEnableGzipHttpCompression(enableGzipHttpCompression);
     }
 
     /** Builds a new {@link SplunkEventWriter} objects based on the configuration. */
