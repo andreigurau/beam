@@ -26,6 +26,7 @@ import java.security.cert.X509Certificate;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** A Custom X509TrustManager that trusts a user provided CA and default CA's. */
 public class CustomX509TrustManager implements X509TrustManager {
@@ -33,6 +34,7 @@ public class CustomX509TrustManager implements X509TrustManager {
   private final X509TrustManager defaultTrustManager;
   private final X509TrustManager userTrustManager;
 
+  @SuppressWarnings("initialization")
   public CustomX509TrustManager(X509Certificate userCertificate)
       throws CertificateException, KeyStoreException, NoSuchAlgorithmException, IOException {
     // Get Default Trust Manager
@@ -50,6 +52,7 @@ public class CustomX509TrustManager implements X509TrustManager {
     userTrustManager = getX509TrustManager(trustMgrFactory.getTrustManagers());
   }
 
+  @Nullable
   private X509TrustManager getX509TrustManager(TrustManager[] trustManagers) {
     for (TrustManager tm : trustManagers) {
       if (tm instanceof X509TrustManager) {
