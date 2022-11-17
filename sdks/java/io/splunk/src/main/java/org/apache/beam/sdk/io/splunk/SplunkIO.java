@@ -163,7 +163,7 @@ public class SplunkIO {
               .withRootCaCertificatePath(rootCaCertificatePath())
               .withEnableBatchLogs(enableBatchLogs())
               .withEnableGzipHttpCompression(enableGzipHttpCompression());
-      ;
+
 
       SplunkEventWriter writer = builder.build();
       LOG.info("SplunkEventWriter configured");
